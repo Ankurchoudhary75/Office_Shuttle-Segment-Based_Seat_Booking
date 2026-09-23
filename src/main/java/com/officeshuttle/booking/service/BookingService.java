@@ -91,53 +91,52 @@ public class BookingService {
      * Layer 4: DB GiST exclusion constraint safety net
      */
     public Booking bookSegment(Long tripId, Long userId, int fromStopIdx, int toStopIdx, String idempotencyKey) {
+        // Idempotency check: if key already exists, return the existing booking
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            Optional<Booking> existing = bookingRepository.findByIdempotencyKey(idempotencyKey);
+            if (existing.isPresent()) {
+                log.info("Idempotent replay detected for key: {}", idempotencyKey);
+                return existing.get();
+            }
+        }
+
+        // Validate segment
+        final Segment segment;
+        try {
+            segment = Segment.of(fromStopIdx, toStopIdx);
+        } catch (IllegalArgumentException ex) {
+            throw new InvalidSegmentException(ex.getMessage());
+        }
+
+        Trip trip = tripRepository.findById(tripId)
+                .orElseThrow(() -> new InvalidSegmentException("Trip not found with id: " + tripId));
+
+        if (trip.getStatus() != TripStatus.SCHEDULED) {
+            throw new TripNotOperationalException("Trip is not operational: " + trip.getStatus());
+        }
+
+        if (segment.getToIdx() > trip.getRoute().getTotalStops() - 1) {
+            throw new InvalidSegmentException("Requested stop index exceeds route total stops");
+        }
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new UnauthorizedActionException("User not found: " + userId));
+
+        int seatCount = trip.getBus().getSeatCount();
+
+        // --- Layer 2: Atomic Redis Lua Reservation ---
+        final int provisionalSeatNo = redisScriptExecutor.reserveSegment(tripId, seatCount, segment);
+
+        if (provisionalSeatNo == -1) {
+            rejectedCounter.increment();
+            throw new SegmentUnavailableException(
+                    "No seat is free for the entire requested segment.",
+                    String.format("POST /api/v1/trips/%d/waitlist", tripId)
+            );
+        }
+
+        // --- Layer 3 & Layer 4: PostgreSQL Commit Transaction ---
         return bookingTimer.record(() -> {
-            // Idempotency check: if key already exists, return the existing booking
-            if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-                Optional<Booking> existing = bookingRepository.findByIdempotencyKey(idempotencyKey);
-                if (existing.isPresent()) {
-                    log.info("Idempotent replay detected for key: {}", idempotencyKey);
-                    return existing.get();
-                }
-            }
-
-            // Validate segment
-            Segment segment;
-            try {
-                segment = Segment.of(fromStopIdx, toStopIdx);
-            } catch (IllegalArgumentException ex) {
-                throw new InvalidSegmentException(ex.getMessage());
-            }
-
-            Trip trip = tripRepository.findById(tripId)
-                    .orElseThrow(() -> new InvalidSegmentException("Trip not found with id: " + tripId));
-
-            if (trip.getStatus() != TripStatus.SCHEDULED) {
-                throw new TripNotOperationalException("Trip is not operational: " + trip.getStatus());
-            }
-
-            if (segment.getToIdx() > trip.getRoute().getTotalStops() - 1) {
-                throw new InvalidSegmentException("Requested stop index exceeds route total stops");
-            }
-
-            User user = userRepository.findById(userId)
-                    .orElseThrow(() -> new UnauthorizedActionException("User not found: " + userId));
-
-            int totalStops = trip.getRoute().getTotalStops();
-            int seatCount = trip.getBus().getSeatCount();
-
-            // --- Layer 2: Atomic Redis Lua Reservation ---
-            int provisionalSeatNo = redisScriptExecutor.reserveSegment(tripId, seatCount, segment);
-
-            if (provisionalSeatNo == -1) {
-                rejectedCounter.increment();
-                throw new SegmentUnavailableException(
-                        "No seat is free for the entire requested segment.",
-                        String.format("POST /api/v1/trips/%d/waitlist", tripId)
-                );
-            }
-
-            // --- Layer 3 & Layer 4: PostgreSQL Commit Transaction ---
             try {
                 return executeTransactionalCommit(trip, user, segment, provisionalSeatNo, idempotencyKey);
             } catch (Exception ex) {
@@ -155,16 +154,16 @@ public class BookingService {
         Long tripId = trip.getTripId();
 
         // If Redis was unavailable (-2), compute candidate using DB state & SeatMap
-        int finalSeatNo = provisionalSeatNo;
-        if (finalSeatNo <= 0) {
+        int resolvedSeatNo = provisionalSeatNo;
+        if (resolvedSeatNo <= 0) {
             List<Booking> confirmedBookings = bookingRepository.findByTrip_TripIdAndStatus(tripId, BookingStatus.CONFIRMED);
             SeatMap seatMap = new SeatMap(trip.getRoute().getTotalStops(), trip.getBus().getSeatCount());
             for (Booking b : confirmedBookings) {
                 seatMap.reserve(b.getSeat().getSeatNo(), Segment.of(b.getFromStopIdx(), b.getToStopIdx()));
             }
             BitSet candidates = seatMap.getQualifyingSeats(segment);
-            finalSeatNo = seatAllocationStrategy.chooseSeat(candidates, seatMap, segment);
-            if (finalSeatNo == -1) {
+            resolvedSeatNo = seatAllocationStrategy.chooseSeat(candidates, seatMap, segment);
+            if (resolvedSeatNo == -1) {
                 rejectedCounter.increment();
                 throw new SegmentUnavailableException(
                         "No seat is free for the entire requested segment.",
@@ -172,6 +171,8 @@ public class BookingService {
                 );
             }
         }
+
+        final int finalSeatNo = resolvedSeatNo;
 
         // Layer 3: Authoritative re-validation against PostgreSQL
         Seat seat = seatRepository.findByTrip_TripIdAndSeatNo(tripId, finalSeatNo)
