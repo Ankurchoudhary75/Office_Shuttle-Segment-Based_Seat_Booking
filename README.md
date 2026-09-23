@@ -237,3 +237,4 @@ office-shuttle-booking/
 - 🗄️ **[Entity Relationship & GiST Schema](docs/ER_DIAGRAM.md)**: Relational schema and exclusion constraint mechanics.
 - 🛡️ **[Mathematical Concurrency Proof](docs/CONCURRENCY_PROOF.md)**: Formal analysis of the 4-layer defense stack.
 - 🧪 **[System Verification & Demo Guide](docs/DEMO_GUIDE.md)**: Step-by-step cURL verification commands and outputs.
+- 📊 **[Official System Verification Report (PDF)](docs/Office_Shuttle_System_Verification_Report.pdf)**: Complete visual test execution report with Postman & Terminal outputs.
