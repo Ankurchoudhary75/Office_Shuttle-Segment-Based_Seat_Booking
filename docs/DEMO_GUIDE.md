@@ -1,31 +1,31 @@
-# 🎬 Complete End-to-End Demo & Shortlisting Guide
+# 🎬 System Demonstration & Verification Guide
 
-This guide gives you the exact step-by-step procedures to run, test, capture demo screenshots, and present the **Office Shuttle Segment-Based Seat Booking** system to evaluators.
+This document provides a step-by-step procedure to run, test, and verify the **Office Shuttle Segment-Based Seat Booking** system across all functional capabilities, concurrency invariants, and edge cases.
 
 ---
 
 ## 🚀 Part 1: Running the Complete System
 
-### Option A: Using Docker Compose (All-in-One)
+### Option A: Using Docker Compose (Recommended)
 Run the following command from the project root:
 ```bash
 docker compose up --build
 ```
-This starts:
-- **PostgreSQL 16** on `localhost:5432`
-- **Redis 7** on `localhost:6379`
+This automatically provisions and starts:
+- **PostgreSQL 16** on `localhost:5432` (with `btree_gist` extension and Flyway migrations)
+- **Redis 7** on `localhost:6379` (with AOF persistence and atomic Lua scripts)
 - **Spring Boot 3 App** on `http://localhost:8080`
 - **Prometheus** on `http://localhost:9090`
-- **Grafana** on `http://localhost:3000` (Login: `admin` / `admin`)
+- **Grafana** on `http://localhost:3000` (Default credentials: `admin` / `admin`)
 
 ---
 
-## 🧪 Part 2: Step-by-Step API Execution (With Exact cURL & JSON)
+## 🧪 Part 2: Step-by-Step API Verification Workflow
 
-Follow these 7 sequential steps in Postman or Terminal to produce the screenshots for your submission:
+Follow these sequential steps in Postman or Terminal via cURL:
 
-### Step 1: Login to Get JWT Access Tokens
-#### 1.1 Admin Login
+### Step 1: Authentication & Token Generation
+#### 1.1 Admin Authentication
 ```bash
 curl -X POST http://localhost:8080/api/v1/auth/login \
   -H "Content-Type: application/json" \
@@ -34,7 +34,7 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
     "password": "password123"
   }'
 ```
-**Expected 200 OK Response**:
+**Response (200 OK)**:
 ```json
 {
   "accessToken": "eyJhbGciOiJIUzI1NiJ9...",
@@ -45,7 +45,7 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 }
 ```
 
-#### 1.2 Employee Login (Alice)
+#### 1.2 Employee Authentication (Alice)
 ```bash
 curl -X POST http://localhost:8080/api/v1/auth/login \
   -H "Content-Type: application/json" \
@@ -57,12 +57,12 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 
 ---
 
-### Step 2: Check Initial Availability for Segment A $\rightarrow$ C
+### Step 2: Query Initial Segment Availability (A $\rightarrow$ C)
 ```bash
 curl -X GET "http://localhost:8080/api/v1/trips/1/availability?from=Station%20A&to=City%20Center%20C" \
   -H "Authorization: Bearer <ALICE_JWT_TOKEN>"
 ```
-**Expected 200 OK Response**:
+**Response (200 OK)**:
 ```json
 {
   "tripId": 1,
@@ -75,7 +75,7 @@ curl -X GET "http://localhost:8080/api/v1/trips/1/availability?from=Station%20A&
 
 ---
 
-### Step 3: Happy Path & "Seat Weaving" Proof (The Crown Jewel)
+### Step 3: Segment Booking & "Seat Weaving" Proof
 
 #### 3.1 Alice books Segment A $\rightarrow$ B on Trip 1
 ```bash
@@ -88,7 +88,7 @@ curl -X POST http://localhost:8080/api/v1/trips/1/bookings \
     "toStop": "Tech Park B"
   }'
 ```
-**Expected 201 Created Response**:
+**Response (201 Created)**:
 ```json
 {
   "bookingId": "bk_1",
@@ -98,7 +98,7 @@ curl -X POST http://localhost:8080/api/v1/trips/1/bookings \
   "status": "CONFIRMED"
 }
 ```
-*(Notice: Alice is placed on **Seat 1** for leg 0).*
+*(Alice is allocated **Seat 1** for leg 0).*
 
 #### 3.2 Bob books Segment B $\rightarrow$ D on Trip 1
 ```bash
@@ -111,7 +111,7 @@ curl -X POST http://localhost:8080/api/v1/trips/1/bookings \
     "toStop": "HQ Campus D"
   }'
 ```
-**Expected 201 Created Response**:
+**Response (201 Created)**:
 ```json
 {
   "bookingId": "bk_2",
@@ -121,16 +121,13 @@ curl -X POST http://localhost:8080/api/v1/trips/1/bookings \
   "status": "CONFIRMED"
 }
 ```
-**🎯 Key Result to Highlight in Screenshot**: Bob is assigned **Seat 1** too! Because $[0, 1)$ and $[1, 3)$ share zero road legs, the system intelligently packs both passengers onto Seat 1 without wasting Seat 2 or 3.
+**Technical Significance**: Bob is assigned **Seat 1** as well. Because $[0, 1)$ and $[1, 3)$ share no road segments, the bitmap engine (`BestFitStrategy`) packs both passengers onto Seat 1, leaving Seats 2 and 3 available for full-route journeys.
 
 ---
 
-### Step 4: Concurrency & Boundary Rejection (RFC 7807 Error Envelope)
+### Step 4: Overlap Conflict & RFC 7807 Error Envelope
 
-Suppose Seat 1 is now full ($A \rightarrow B$ and $B \rightarrow D$). Let Carol book $A \rightarrow D$ on Seat 2, and David book $A \rightarrow D$ on Seat 3.
-Now all 3 seats on Trip 1 are committed for $[0, 3)$.
-
-When a new passenger tries to book $A \rightarrow C$:
+When all physical seats are committed and a passenger requests an overlapping segment:
 ```bash
 curl -X POST http://localhost:8080/api/v1/trips/1/bookings \
   -H "Authorization: Bearer <NEW_USER_JWT>" \
@@ -141,7 +138,7 @@ curl -X POST http://localhost:8080/api/v1/trips/1/bookings \
     "toStop": "City Center C"
   }'
 ```
-**Expected 409 Conflict (RFC 7807) Response**:
+**Response (409 Conflict - RFC 7807 Standard)**:
 ```json
 {
   "type": "https://api.shuttle/errors/segment-unavailable",
@@ -158,8 +155,7 @@ curl -X POST http://localhost:8080/api/v1/trips/1/bookings \
 
 ---
 
-### Step 5: Joining the Waitlist
-The passenger follows the `waitlistOffer` link:
+### Step 5: Joining the Segment Waitlist
 ```bash
 curl -X POST http://localhost:8080/api/v1/trips/1/waitlist \
   -H "Authorization: Bearer <NEW_USER_JWT>" \
@@ -169,7 +165,7 @@ curl -X POST http://localhost:8080/api/v1/trips/1/waitlist \
     "toStop": "Tech Park B"
   }'
 ```
-**Expected 201 Created Response**:
+**Response (201 Created)**:
 ```json
 {
   "waitlistId": 1,
@@ -182,13 +178,13 @@ curl -X POST http://localhost:8080/api/v1/trips/1/waitlist \
 
 ---
 
-### Step 6: Cancellation & Smart Promotion Sweep
-Alice cancels her $A \rightarrow B$ booking (`bk_1`):
+### Step 6: Cancellation & Automated Promotion Sweep
+When Alice cancels booking `bk_1`:
 ```bash
 curl -X POST http://localhost:8080/api/v1/bookings/1/cancel \
   -H "Authorization: Bearer <ALICE_JWT_TOKEN>"
 ```
-**Expected 200 OK Response**:
+**Response (200 OK)**:
 ```json
 {
   "bookingId": 1,
@@ -197,13 +193,13 @@ curl -X POST http://localhost:8080/api/v1/bookings/1/cancel \
   "promotedCount": 1
 }
 ```
-**🎯 Key Result**: The system freed leg 0 on Seat 1, immediately ran the `FcfsEligiblePolicy` sweep, and promoted the waitlisted passenger automatically.
+**Technical Significance**: Cancelling `bk_1` instantly releases leg 0 on Seat 1 in Redis and PostgreSQL, executes the `FcfsEligiblePolicy` sweep, and auto-promotes the eligible waitlisted request into a `CONFIRMED` booking.
 
 ---
 
 ### Step 7: Driver Check-In & No-Show Lifecycle
 
-#### 7.1 Driver Check-In at Station A
+#### 7.1 Boarding Check-In at Station A
 ```bash
 curl -X POST http://localhost:8080/api/v1/bookings/2/check-in \
   -H "Authorization: Bearer <DRIVER_JWT_TOKEN>" \
@@ -212,7 +208,7 @@ curl -X POST http://localhost:8080/api/v1/bookings/2/check-in \
     "currentStopIdx": 1
   }'
 ```
-**Expected 200 OK Response**:
+**Response (200 OK)**:
 ```json
 {
   "bookingId": 2,
@@ -223,7 +219,6 @@ curl -X POST http://localhost:8080/api/v1/bookings/2/check-in \
 ```
 
 #### 7.2 No-Show Downstream Capacity Reclamation
-If a passenger did not show up at Stop 1:
 ```bash
 curl -X POST http://localhost:8080/api/v1/bookings/3/no-show \
   -H "Authorization: Bearer <DRIVER_JWT_TOKEN>" \
@@ -232,7 +227,7 @@ curl -X POST http://localhost:8080/api/v1/bookings/3/no-show \
     "departedStopIdx": 1
   }'
 ```
-**Expected 200 OK Response**:
+**Response (200 OK)**:
 ```json
 {
   "bookingId": 3,
@@ -243,11 +238,11 @@ curl -X POST http://localhost:8080/api/v1/bookings/3/no-show \
 
 ---
 
-## 🛡️ Part 3: The "Mic Drop" Database Proof (Layer 4 GiST Exclusion)
+## 🛡️ Part 3: Database-Level Safety Verification (Layer 4 GiST Exclusion)
 
-To prove to any interviewer that double-booking is **physically impossible** even if someone writes raw SQL directly into PostgreSQL:
+To independently verify that overlapping bookings are physically impossible at the PostgreSQL engine level:
 
-1. Connect to PostgreSQL via terminal:
+1. Connect to PostgreSQL directly:
 ```bash
 docker exec -it office_shuttle_postgres psql -U shuttle_user -d office_shuttle
 ```
@@ -257,34 +252,27 @@ docker exec -it office_shuttle_postgres psql -U shuttle_user -d office_shuttle
 INSERT INTO bookings (trip_id, seat_id, user_id, from_stop_idx, to_stop_idx, status, idempotency_key, version)
 VALUES (1, 1, 1, 0, 2, 'CONFIRMED', 'raw-sql-test-1', 0);
 ```
-*(Query succeeds: 1 row inserted).*
 
-3. Now attempt to insert an overlapping booking on the **same Seat 1** for range $[1, 3)$ ($B \rightarrow D$):
+3. Attempt to insert a conflicting overlapping booking on the **same Seat 1** for range $[1, 3)$ ($B \rightarrow D$):
 ```sql
 INSERT INTO bookings (trip_id, seat_id, user_id, from_stop_idx, to_stop_idx, status, idempotency_key, version)
 VALUES (1, 1, 2, 1, 3, 'CONFIRMED', 'raw-sql-test-2', 0);
 ```
 
-4. **💥 The PostgreSQL Engine Rejection**:
-```
+4. **PostgreSQL Constraint Enforcement**:
+```sql
 ERROR: conflicting key value violates exclusion constraint "no_overlapping_segments"
 DETAIL: Key (seat_id, int4range(from_stop_idx, to_stop_idx, '[)'::text))=(1, [1,3)) conflicts with existing key (seat_id, int4range(from_stop_idx, to_stop_idx, '[)'::text))=(1, [0,2)).
 ```
 
-**Interview Explanation**:
-*"This proves that no matter what bugs or race conditions could theoretically occur at the application layer or cache layer, the PostgreSQL storage engine itself will abort any overlapping transaction."*
-
 ---
 
-## 📊 Part 4: Grafana Observability Dashboard
+## 📊 Part 4: Prometheus & Grafana Observability
 
-Open your browser to: **`http://localhost:3000`** (User: `admin` / Pass: `admin`)
-Navigate to Dashboards $\rightarrow$ **Office Shuttle System Observability**:
-
-You will see real-time panels for:
-1. **Confirmed Bookings Total** (`booking_requests_total{result="CONFIRMED"}`)
-2. **Waitlisted Requests Total** (`booking_requests_total{result="WAITLISTED"}`)
-3. **Race Conflicts Defended** (`booking_race_conflicts_total`)
-4. **Waitlist Auto-Promotions Total** (`promotion_success_total`)
-5. **Booking Request Latency** (p50, p95, p99 percentiles)
-6. **Transactional Outbox Backlog Gauge** (`outbox_backlog_size`)
+- Open **`http://localhost:3000`** in a browser (Credentials: `admin` / `admin`).
+- Open **Dashboards $\rightarrow$ Office Shuttle System Observability**.
+- Monitored metrics:
+  - `booking_requests_total` (CONFIRMED vs WAITLISTED vs REJECTED)
+  - `booking_race_conflicts_total` (Layer 2/3/4 defense triggers)
+  - `booking_latency_seconds` (p50, p95, p99)
+  - `outbox_backlog_size` (Pending async event queue)
