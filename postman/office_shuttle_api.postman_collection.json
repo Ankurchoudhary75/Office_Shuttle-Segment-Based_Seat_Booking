@@ -1,0 +1,191 @@
+{
+  "info": {
+    "name": "Office Shuttle - Segment-Based Seat Booking API",
+    "description": "Postman collection demonstrating segment-based seat booking with 4-layer concurrency defense, waitlist promotion, and edge cases.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Authentication",
+      "item": [
+        {
+          "name": "Login (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@shuttle.com\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "login"] }
+          }
+        },
+        {
+          "name": "Login (Employee Alice)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"alice@company.com\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "login"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Route & Trip Management",
+      "item": [
+        {
+          "name": "Get All Active Routes",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/routes", "host": ["{{baseUrl}}"], "path": ["api", "v1", "routes"] }
+          }
+        },
+        {
+          "name": "Check Availability (Segment A -> C)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/trips/1/availability?from=Station A&to=City Center C",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "trips", "1", "availability"],
+              "query": [
+                { "key": "from", "value": "Station A" },
+                { "key": "to", "value": "City Center C" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Booking Operations",
+      "item": [
+        {
+          "name": "Book Segment A -> B (Alice)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Idempotency-Key", "value": "idemp-test-001" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fromStop\": \"Station A\",\n  \"toStop\": \"Tech Park B\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/trips/1/bookings", "host": ["{{baseUrl}}"], "path": ["api", "v1", "trips", "1", "bookings"] }
+          }
+        },
+        {
+          "name": "Book Segment B -> D (Bob - Seat Reuse on Seat 1)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Idempotency-Key", "value": "idemp-test-002" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fromStop\": \"Tech Park B\",\n  \"toStop\": \"HQ Campus D\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/trips/1/bookings", "host": ["{{baseUrl}}"], "path": ["api", "v1", "trips", "1", "bookings"] }
+          }
+        },
+        {
+          "name": "Cancel Booking (Triggers Promotion Sweep)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/1/cancel", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "1", "cancel"] }
+          }
+        },
+        {
+          "name": "Interval Trimming (Change Boarding Stop)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"newFromStop\": \"Tech Park B\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/1/trim", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "1", "trim"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Waitlist Operations",
+      "item": [
+        {
+          "name": "Join Waitlist for Segment",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fromStop\": \"Station A\",\n  \"toStop\": \"HQ Campus D\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/trips/1/waitlist", "host": ["{{baseUrl}}"], "path": ["api", "v1", "trips", "1", "waitlist"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Boarding & Edge Cases",
+      "item": [
+        {
+          "name": "Passenger Check-In (Driver)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{driverToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentStopIdx\": 0\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/1/check-in", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "1", "check-in"] }
+          }
+        },
+        {
+          "name": "Mark No-Show (Downstream Release)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"departedStopIdx\": 1\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/1/no-show", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "1", "no-show"] }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "token", "value": "" },
+    { "key": "driverToken", "value": "" }
+  ]
+}
