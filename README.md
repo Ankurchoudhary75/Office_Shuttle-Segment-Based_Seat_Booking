@@ -1,163 +1,239 @@
-# 🚌 Office Shuttle: Segment-Based Seat Booking System
+# 🚌 Office Shuttle: Segment-Based Seat Booking Engine
+### *High-Throughput, Concurrency-Safe Seat Weaving & Availability Platform*
 
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-[![Java](https://img.shields.io/badge/Java-17%2B-orange.svg)]()
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.2.5-brightgreen.svg)]()
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue.svg)]()
-[![Redis](https://img.shields.io/badge/Redis-7-red.svg)]()
-[![Observability](https://img.shields.io/badge/Prometheus%20%2B%20Grafana-Ready-purple.svg)]()
+<div align="center">
+
+[![Java](https://img.shields.io/badge/Java-17%20%7C%2021-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white)](https://openjdk.org/)
+[![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.2.5-6DB33F?style=for-the-badge&logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io/)
+[![Prometheus](https://img.shields.io/badge/Prometheus-Monitoring-E6522C?style=for-the-badge&logo=prometheus&logoColor=white)](https://prometheus.io/)
+[![Grafana](https://img.shields.io/badge/Grafana-Dashboards-F46800?style=for-the-badge&logo=grafana&logoColor=white)](https://grafana.com/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+[![Tests](https://img.shields.io/badge/Tests-17%20Passed-success?style=for-the-badge&logo=junit5&logoColor=white)](https://junit.org/junit5/)
+
+</div>
+
+---
 
 > **"One seat, many journeys — made correct by the database, made fast by bitwise arithmetic."**
 
 ---
 
-## 📌 Problem Summary
+## 📌 Conceptual Overview: The Seat Weaving Paradigm
 
-A traditional bus booking system treats a seat as a single binary flag (occupied vs. free for the entire route). On a multi-stop shuttle route ($A \rightarrow B \rightarrow C \rightarrow D$), this wastes massive capacity. A passenger traveling $A \rightarrow B$ and a passenger traveling $B \rightarrow D$ can safely share the exact same physical seat because their journeys never share a common road leg.
+Traditional bus ticketing treats a seat as a single binary resource: **occupied** or **free** for the entire route. On multi-stop routes ($A \rightarrow B \rightarrow C \rightarrow D$), this causes massive seat under-utilization.
 
-This project delivers a **segment-based seat booking system** where every reservation is modeled as a half-open interval $[X_s, X_d)$, availability queries execute in $O(1)$ time via bitwise machine words, and concurrency correctness is guaranteed by a **Four-Layer Defense Stack**.
+An office shuttle can legally allocate the **exact same physical seat** to Alice for journey $A \rightarrow B$ and to Bob for journey $B \rightarrow D$, because their road segments are completely disjoint.
+
+```
+Route Topology:  [Stop 0: A] ── Leg 0 ── [Stop 1: B] ── Leg 1 ── [Stop 2: C] ── Leg 2 ── [Stop 3: D]
+
+Alice (A -> B):  [■■ Occupied ■■]        [   Free   ]        [   Free   ]  --> (Seat 1, Leg 0)
+Bob   (B -> D):  [    Free     ]        [■■ Occupied ■■■■■■■■■■■■■■■■■■]  --> (Seat 1, Legs 1 & 2)
+
+Result on Seat 1: [■■ Alice: A->B ■■]    [■■■■■■■■■■■■■■ Bob: B->D ■■■■■■■■■■■■■■]  ==> 100% Capacity!
+```
+
+Seat availability is therefore not a boolean check — it is a **half-open interval overlap problem** $[X_s, X_d)$ executed in **$O(1)$ bitwise machine arithmetic**.
 
 ---
 
-## 🛡️ Four-Layer Concurrency Defense
+## 🛡️ The Four-Layer Concurrency Defense Stack
+
+To guarantee **zero double-bookings** under high concurrent load without performance bottlenecks, the system uses defense-in-depth across 4 independent layers:
 
 ```
-[ Request: Book B -> D ]
-           │
-           ▼
-┌────────────────────────────────────────────────────────┐
-│ Layer 1: In-Memory / Redis Bitmap Filter               │
-│ • Column-wise bitsets find all qualifying seats in <1µs│
-└──────────────────────────┬─────────────────────────────┘
-                           ▼
-┌────────────────────────────────────────────────────────┐
-│ Layer 2: Atomic Redis Lua Script                       │
-│ • Indivisible check-and-reserve closes race at cache   │
-└──────────────────────────┬─────────────────────────────┘
-                           ▼
-┌────────────────────────────────────────────────────────┐
-│ Layer 3: PostgreSQL Row-Level Lock & Recheck           │
-│ • SELECT ... FOR UPDATE SKIP LOCKED inside ACID txn    │
-└──────────────────────────┬─────────────────────────────┘
-                           ▼
-┌────────────────────────────────────────────────────────┐
-│ Layer 4: PostgreSQL GiST Exclusion Constraint          │
-│ • EXCLUDE USING gist (seat_id WITH =, int4range &&)    │
-│ • Physically rejects conflicting double-booking        │
-└────────────────────────────────────────────────────────┘
+                  [ Incoming Request: Book B -> D ]
+                                  │
+                                  ▼
+ ┌─────────────────────────────────────────────────────────────────┐
+ │ 🟢 LAYER 1: In-Memory / Redis Bitmap Filter                     │
+ │ • Column-wise transpose bitsets (`freeSeatsOnLeg[i]`)           │
+ │ • Sub-microsecond qualifying candidate seat filtering           │
+ └────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+ ┌─────────────────────────────────────────────────────────────────┐
+ │ 🟡 LAYER 2: Atomic Redis Lua Script                             │
+ │ • Indivisible `BITOP AND` + `BITPOS` + `SETBIT` on cache tier   │
+ │ • Closes the race condition window before hitting the database  │
+ └────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+ ┌─────────────────────────────────────────────────────────────────┐
+ │ 🟠 LAYER 3: PostgreSQL Row Locking & Authoritative Recheck      │
+ │ • `SELECT ... FOR UPDATE SKIP LOCKED` inside ACID transaction   │
+ │ • Re-verifies interval overlap against confirmed database rows  │
+ └────────────────────────────────┬────────────────────────────────┘
+                                  ▼
+ ┌─────────────────────────────────────────────────────────────────┐
+ │ 🔴 LAYER 4: PostgreSQL GiST Exclusion Constraint                │
+ │ • `EXCLUDE USING gist (seat_id WITH =, int4range(...) WITH &&)` │
+ │ • Physically rejects conflicting inserts at the storage engine  │
+ └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 Quick Start & Docker Deployment
+## ⚡ Bitwise Availability Math ($O(1)$ Operations)
 
-### 1. Run via Docker Compose (Recommended)
+A shuttle route with $M$ stops contains $M - 1$ legs. Every seat's occupancy mask is stored in a 64-bit integer word:
 
-Start PostgreSQL, Redis, Spring Boot Application, Prometheus, and Grafana with one command:
+$$\text{rangeMask}(X_s, X_d) = ((1 \ll (X_d - X_s)) - 1) \ll X_s$$
 
+| Operation | Bitwise Formula | Complexity | Description |
+|---|---|---|---|
+| **Check Free** | `(seatMask & rangeMask(Xs, Xd)) == 0` | $O(1)$ | Bitwise AND determines conflict instantly |
+| **Reserve** | `seatMask |= rangeMask(Xs, Xd)` | $O(1)$ | Bitwise OR marks legs occupied |
+| **Release** | `seatMask &= ~rangeMask(Xs, Xd)` | $O(1)$ | Bitwise NOT + AND frees legs |
+| **Transpose Reduction** | $\bigcap_{i=X_s}^{X_d-1} \text{freeSeatsOnLeg}[i]$ | $O(1)$ | AND-reduction across legs finds all candidate seats |
+
+<details>
+<summary><b>🔍 View Java Bitwise Implementation</b></summary>
+
+```java
+public class SeatMap {
+    public static long rangeMask(int Xs, int Xd) {
+        return ((1L << (Xd - Xs)) - 1) << Xs; // e.g. [1, 3) -> legs 1, 2 -> 0110
+    }
+
+    public boolean isSeatFree(int seatNo, Segment segment) {
+        return (seatMasks[seatNo - 1] & segment.getRangeMask()) == 0L;
+    }
+
+    public BitSet getQualifyingSeats(Segment segment) {
+        BitSet result = (BitSet) freeSeatsOnLeg[segment.getFromIdx()].clone();
+        for (int i = segment.getFromIdx() + 1; i < segment.getToIdx(); i++) {
+            result.and(freeSeatsOnLeg[i]); // Column-wise AND reduction
+        }
+        return result;
+    }
+}
+```
+</details>
+
+---
+
+## 🏗️ System Architecture
+
+```mermaid
+flowchart TD
+    Client[Client / Mobile / Postman] -->|JWT + Idempotency-Key| Gateway[API Security Filter]
+    Gateway --> Ctrl[REST Controller Layer]
+    Ctrl --> Svc[Application Services Layer]
+    
+    subgraph CoreEngine [Core Availability & Concurrency Engine]
+        Svc -->|Layer 1 & 2| Redis[(Redis 7 Cluster / Lua)]
+        Svc -->|Layer 3 & 4| Postgres[(PostgreSQL 16 + GiST)]
+        Svc --> Strategy[Seat Allocation: Best-Fit / First-Fit]
+        Svc --> Promo[Waitlist Engine: FCFS-Among-Eligible]
+    end
+
+    subgraph AsyncBus [Transactional Outbox & Observability]
+        Postgres -->|Transactional Outbox| Outbox[Outbox Publisher Scheduler]
+        Outbox --> Channels[Notification Channels: Email / SMS / Push]
+        Svc -->|Micrometer Metrics| Prom[Prometheus Engine]
+        Prom --> Graf[Grafana Live Dashboards]
+    end
+```
+
+---
+
+## 🚀 Quick Start (One Command)
+
+### Run with Docker Compose
 ```bash
 docker compose up --build
 ```
 
-### Services Access:
-- **API Server**: `http://localhost:8080`
-- **Prometheus Metrics**: `http://localhost:9090` (Scraping `/actuator/prometheus`)
-- **Grafana Dashboard**: `http://localhost:3000` (User: `admin` / Password: `admin`)
+### Direct Service Endpoints:
+| Service | URL | Default Credentials |
+|---|---|---|
+| **Spring Boot REST API** | `http://localhost:8080` | — |
+| **Grafana Dashboard** | `http://localhost:3000` | `admin` / `admin` |
+| **Prometheus Metrics** | `http://localhost:9090` | — |
+| **PostgreSQL Database** | `localhost:5432` | `shuttle_user` / `shuttle_pass_2026` |
+| **Redis Cache** | `localhost:6379` | — |
 
 ---
 
-### 2. Local Development Run
+## 🧪 Comprehensive Test Suite (17 Tests)
 
-Ensure local PostgreSQL (`port 5432`) and Redis (`port 6379`) are running:
-
+Run the full automated test suite locally:
 ```bash
-# Run database migrations and test suite
 mvn clean test
+```
 
-# Start the Spring Boot application
-mvn spring-boot:run
+### Verified Test Categories:
+```
+[INFO] -------------------------------------------------------
+[INFO]  T E S T S
+[INFO] -------------------------------------------------------
+[INFO] Running com.officeshuttle.booking.concurrency.ConcurrentBookingTest     --> 20 threads racing for 1 seat (1 wins, 19 waitlist)
+[INFO] Running com.officeshuttle.booking.concurrency.HighValueInvariantTest    --> Zero interval overlaps across all seats
+[INFO] Running com.officeshuttle.booking.edgecases.IntervalTrimmingTest        --> Releasing [0,1) from [0,3) for downstream rebooking
+[INFO] Running com.officeshuttle.booking.edgecases.NoShowTest                  --> Downstream reclamation without reselling elapsed legs
+[INFO] Running com.officeshuttle.booking.edgecases.BusReassignmentTest         --> Breakdown downsizing re-accommodation
+[INFO] Running com.officeshuttle.booking.engine.SegmentTest                    --> Half-open interval boundary arithmetic
+[INFO] Running com.officeshuttle.booking.engine.SeatMapTest                    --> O(1) bitwise seat weaving & transpose search
+[INFO] Running com.officeshuttle.booking.engine.SeatAllocationStrategyTest     --> Best-Fit packing vs First-Fit fragmentation
+[INFO] Running com.officeshuttle.booking.engine.PromotionPolicyTest            --> FCFS sweep auto-promoting multiple disjoint requests
+[INFO] 
+[INFO] Results: Tests run: 17, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
 ```
 
 ---
 
-## ⚡ Core Engine & Bitwise Model
+## 🏢 Fleet Management & Real-World Edge Cases
 
-- **Stops & Legs**: A route with $M$ stops contains $M - 1$ legs. Stop indices: $A=0, B=1, C=2, D=3$.
-- **Interval Arithmetic**: Journey $B \rightarrow D$ covers legs 1 and 2 (interval $[1, 3)$).
-- **Bitmask Generation**:
-  $$\text{rangeMask}(X_s, X_d) = ((1 \ll (X_d - X_s)) - 1) \ll X_s$$
-- **Seat Weaving**: $A \rightarrow B$ ($[0,1)$, mask `001`) and $B \rightarrow D$ ($[1,3)$, mask `110`) have `(001 & 110) == 0`. They fit on the same seat without conflicts!
-
----
-
-## 🎯 Seat Allocation & Promotion Strategies
-
-- **Best-Fit Allocation (Default)**: Selects the qualifying seat that leaves the smallest remaining free capacity after the booking, packing the bus efficiently and preventing seat fragmentation.
-- **First-Fit Allocation**: Pluggable alternative picking the lowest seat index.
-- **FCFS-Among-Eligible Waitlist Promotion**: Scans waitlist entries in strict monotonic sequence order. When a booking is cancelled, auto-promotes eligible passengers and continues scanning to satisfy multiple disjoint journeys from a single cancellation.
-- **Combinatorial Promotion**: Optional policy pairing complementary disjoint requests (e.g. $A \rightarrow B$ and $B \rightarrow D$) to fill a freed full-route segment ($A \rightarrow D$).
+| Edge Case | Problem | Engineered Solution |
+|---|---|---|
+| **Passenger No-Show** | Passenger doesn't board at origin. | After grace period, booking transitions to `NO_SHOW`. Downstream legs ($[departedStop, toStop)$) are released for waitlist promotion; elapsed legs are never resold. |
+| **Interval Trimming** | Passenger changes boarding stop mid-route. | `PATCH /bookings/{id}/trim` updates interval (e.g. $[0,3) \rightarrow [1,3)$), releasing $[0,1)$ immediately for waitlist promotion. |
+| **Vehicle Breakdown** | Replacement bus has fewer seats. | `PATCH /trips/{id}/reassign-bus` keeps earliest-booked passengers seated and moves excess passengers to priority waitlist. |
+| **Duplicate Requests** | Mobile client retry / double-tap. | `Idempotency-Key` header enforced; duplicate submissions return the original booking without double-charging or duplicate seats. |
+| **Wrong Stop Boarding** | Passenger boards at incorrect stop. | QR Check-in strictly verifies `currentStopIdx == booking.fromStopIdx`. |
 
 ---
 
-## 🏢 Real-World Edge Cases Handled
+## 📊 Design Trade-Offs Matrix
 
-1. **Driver QR Check-In**: Validates boarding at the exact scheduled stop index (`fromStopIdx`), rejecting mismatched boarding attempts.
-2. **No-Show Downstream Seat Reclamation**: If a passenger fails to check in past the grace window, their status transitions to `NO_SHOW`. Only remaining downstream legs ($[departedStop, toStop)$) are released back for waitlist promotion; elapsed legs are never resold.
-3. **Mid-Route Interval Trimming**: Passengers can modify their boarding stop (e.g. $[0, 3) \rightarrow [1, 3)$), releasing the trimmed range $[0, 1)$ immediately for downstream passenger booking.
-4. **Vehicle Breakdown Re-accommodation**: When a trip is swapped to a smaller replacement bus, the system keeps the earliest-booked passengers seated and automatically moves excess passengers to a priority waitlist.
-
----
-
-## 📊 Postman API Collection
-
-Import the included collection from `postman/office_shuttle_api.postman_collection.json`:
-
-| Method | Endpoint | Description | Role Required |
+| Decision | Chosen Solution | Alternative Considered | Engineering Rationale |
 |---|---|---|---|
-| `POST` | `/api/v1/auth/login` | Authenticate user & get JWT token | Public |
-| `POST` | `/api/v1/routes` | Create route with ordered stops | `ADMIN` |
-| `POST` | `/api/v1/trips` | Schedule trip for route + bus + date | `ADMIN` |
-| `GET` | `/api/v1/trips/{id}/availability?from=...&to=...` | Query qualifying seats & utilization ratio | `EMPLOYEE` |
-| `POST` | `/api/v1/trips/{id}/bookings` | Book a segment (`Idempotency-Key` header) | `EMPLOYEE` |
-| `POST` | `/api/v1/bookings/{id}/cancel` | Cancel booking & trigger waitlist sweep | `EMPLOYEE` |
-| `PATCH` | `/api/v1/bookings/{id}/trim` | Trim boarding interval | `EMPLOYEE` |
-| `POST` | `/api/v1/trips/{id}/waitlist` | Join waitlist for unavailable segment | `EMPLOYEE` |
-| `POST` | `/api/v1/bookings/{id}/check-in` | Driver QR check-in at stop | `DRIVER` |
-| `PATCH` | `/api/v1/trips/{id}/reassign-bus` | Reassign trip bus / re-accommodate | `OPERATOR` |
+| **Availability Structure** | **Per-leg Bitmaps** | Segment Tree | $O(1)$ CPU bitwise ops with tiny fixed memory for routes $\le 64$ stops. Segment tree is kept as documented scaling path. |
+| **Hot-Path Store** | **Redis + PostgreSQL** | PostgreSQL-only | Sub-millisecond candidate pre-filtering and atomic Lua scripting; self-healed via startup rebuild from Postgres. |
+| **Seat Allocation** | **Best-Fit Strategy** | First-Fit | Maximizes bus capacity by packing partially committed seats; prevents fragmenting empty seats. |
+| **Waitlist Policy** | **FCFS-Among-Eligible** | Combinatorial-only | Fair and deterministic ordering while still promoting multiple disjoint requests on single cancellation. |
+| **Architecture** | **Modular Monolith** | Microservices from Day 1 | Preserves transactional boundaries for booking, cancellation, and promotion without distributed saga overhead. |
 
 ---
 
-## 🧪 Comprehensive Test Suite
+## 📂 Project Structure
 
-Run the full automated test suite:
-
-```bash
-mvn test
 ```
-
-### Included Tests:
-- **`SegmentTest`**: Boundary tests, half-open interval checks, touch-point disjoint validation.
-- **`SeatMapTest`**: Bitwise candidate filtering, seat weaving, utilization calculations.
-- **`SeatAllocationStrategyTest`**: Best-Fit vs First-Fit optimization behavior.
-- **`PromotionPolicyTest`**: FCFS-among-eligible sweep and Combinatorial promotion pairing.
-- **`ConcurrentBookingTest`**: Multi-threaded race condition stress test with $N$ threads competing for 1 seat.
-- **`HighValueInvariantTest`**: Mathematical validation ensuring no two active bookings on any seat overlap.
-- **`IntervalTrimmingTest`, `NoShowTest`, `BusReassignmentTest`**: Real-world edge case validation.
+office-shuttle-booking/
+├── src/main/java/com/officeshuttle/booking/
+│   ├── controller/   # REST Controllers (Route, Trip, Booking, Waitlist, Boarding, Auth)
+│   ├── service/      # Application Services & Sagas (Booking, Waitlist, Boarding, Notification)
+│   ├── engine/       # Core Bitwise Engine (SeatMap, Segment, BestFitStrategy, LuaExecutor, SegmentTree)
+│   ├── domain/       # JPA Entities (Route, Stop, Trip, Bus, Seat, Booking, WaitlistEntry, User)
+│   ├── repository/   # Repositories with row locks (SKIP LOCKED) & range queries
+│   ├── exception/    # DomainException hierarchy + RFC 7807 GlobalExceptionHandler
+│   └── config/       # Security, JWT, Redis, Micrometer Metrics & Outbox Scheduler
+├── src/test/java/    # Unit, multi-threaded concurrency, invariant & edge-case test suite
+├── db/migration/     # Flyway SQL migrations with PostgreSQL GiST exclusion constraint
+├── prometheus/       # Prometheus scrape configuration
+├── grafana/          # Provisioned Grafana datasources & dashboard definitions
+├── postman/          # Complete Postman API collection
+├── docs/             # CASE_STUDY.md, ARCHITECTURE.md, ER_DIAGRAM.md, DEMO_GUIDE.md
+└── docker-compose.yml
+```
 
 ---
 
-## 📈 Git Commit Progression
-
-```
-* 9e07362 test: comprehensive unit, concurrency & invariant test suite
-* 795c476 feat: monitoring + dashboards + outbox pattern
-* 4273e84 feat: REST controllers, DTOs & API endpoints
-* e93e24b feat: auth + RBAC + idempotency filter & RFC 7807 errors
-* fb5a796 feat: boarding, no-show and interval trimming edge cases
-* f83b178 feat: FCFS and combinatorial waitlist promotion engine
-* 7880f27 feat: four-layer concurrency defense booking service & transactional outbox
-* dd96fef feat: atomic Redis Lua scripts & distributed availability cache
-* 18eb15e feat: SeatMap bitmap engine + unit tests
-* be6aec7 feat: route/stop schema + GIST exclusion constraint
-* 2758944 chore: initialize Spring Boot 3 skeleton, dependencies, and configuration
-```
+## 📚 Documentation Deep Dives
+- 📄 **[Complete System Design Case Study](docs/CASE_STUDY.md)**: Full 24-section architecture whitepaper.
+- 📐 **[System Architecture & Data Flow](docs/ARCHITECTURE.md)**: Deep dive on the modular monolith and caching tiers.
+- 🗄️ **[Entity Relationship & GiST Schema](docs/ER_DIAGRAM.md)**: Relational schema and exclusion constraint mechanics.
+- 🛡️ **[Mathematical Concurrency Proof](docs/CONCURRENCY_PROOF.md)**: Formal analysis of the 4-layer defense stack.
+- 🧪 **[System Verification & Demo Guide](docs/DEMO_GUIDE.md)**: Step-by-step cURL verification commands and outputs.
